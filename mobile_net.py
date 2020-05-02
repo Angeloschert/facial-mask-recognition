@@ -68,5 +68,6 @@ def _conv_block(inputs, filters, depth_multiplier=1, strides=(1, 1), block_id=1)
                padding='same',
                use_bias=False,
                name='pw_conv_%d' % block_id)(t)
+    t = BatchNormalization(name='pw_conv_%d_bn' % block_id)(t)
 
     return Activation(backend.relu(t, max_value=6), name='pw_conv_%d_relu' % block_id)(t)
