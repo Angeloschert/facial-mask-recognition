@@ -1,4 +1,7 @@
 import numpy as np
+from matplotlib.colors import rgb_to_hsv, hsv_to_rgb
+from PIL import Image
+import cv2
 
 # Compute every scaling value of the input image
 def calculateScales(img):
@@ -78,7 +81,8 @@ def detect_face_12net(cls_prob, roi, out_side, scale, width, height, threshold):
     score, offset = np.array([cls_prob[x, y]]).T, np.array([dx1, dx2, dx3, dx4]).T
 
     boundingbox = boundingbox + offset * 12.0 * scale
-    rectangles = np.concatenate((boundingbox, score), axis=1).rect2square()
+    rectangles = np.concatenate((boundingbox, score), axis=1)
+    rectangles = rect2square(rectangles)
 
     pick = []
     for i in range(len(rectangles)):
@@ -90,6 +94,152 @@ def detect_face_12net(cls_prob, roi, out_side, scale, width, height, threshold):
         if x2 > x1 and y2 > y1:
             pick.append([x1, y1, x2, y2, sc])
     return NMS(pick, 0.3)
+
+def detect_face_24net(cls_prob, roi, rectangles, width, height, threshold):
+    prob = cls_prob[:, 1]
+    pick = np.where(prob >= threshold)
+    rectangles = np.array(rectangles)
+
+    x1, y1, x2, y2 = rectangles[pick, 0], rectangles[pick, 1], rectangles[pick, 2], rectangles[pick, 3]
+    dx1, dx2, dx3, dx4 = roi[pick, 0], roi[pick, 1], roi[pick, 2], roi[pick, 3]
+    w, h, sc = x1 - x1, y2 - y1, np.array([prob[pick]]).T
+    x1, y1, x2, y2 = np.array([(x1 + dx1 * w)[0]]).T, np.array([(y1 + dx2 * w)[1]]).T, \
+                     np.array([(x2 + dx3 * w)[2]]).T, np.array([(x2 + dx4 * w)[0]]).T
+
+    rectangles = np.concatenate((x1, y1, x2, y2), axis=1)
+    rectangles = rect2square(rectangles)
+    pick = []
+
+    for i in range(len(rectangles)):
+        x1 = int(max(0, rectangles[i][0]))
+        y1 = int(max(0, rectangles[i][1]))
+        x2 = int(min(width, rectangles[i][2]))
+        y2 = int(min(height, rectangles[i][3]))
+        if x2 > x1 and y2 > y1:
+            pick.append([x1, y1, x2, y2, rectangles[i][4]])
+    return NMS(pick, 0.3)
+
+def filter_face_48net(cls_prob, roi, pts, rectangles, width, height, threshold):
+    prob = cls_prob[:, 1]
+    pick = np.where(prob >= threshold)
+    rectangles = np.array(rectangles)
+
+    x1, y1, x2, y2 = rectangles[pick, 0], rectangles[pick, 1], rectangles[pick, 2], rectangles[pick, 3]
+    dx1, dx2, dx3, dx4 = roi[pick, 0], roi[pick, 1], roi[pick, 2], roi[pick, 3]
+    w, h, sc = x2 - x1, y2 - y1, np.array([prob[pick]]).T
+
+    pts0 = np.array([(w * pts[pick, 0] + x1)[0]]).T
+    pts1 = np.array([(w * pts[pick, 5] + y1)[0]]).T
+
+    pts2 = np.array([(w * pts[pick, 1] + x1)[0]]).T
+    pts3 = np.array([(w * pts[pick, 6] + y1)[0]]).T
+
+    pts4 = np.array([(w * pts[pick, 2] + x1)[0]]).T
+    pts5 = np.array([(w * pts[pick, 7] + y1)[0]]).T
+
+    pts6 = np.array([(w * pts[pick, 3] + x1)[0]]).T
+    pts7 = np.array([(w * pts[pick, 8] + y1)[0]]).T
+
+    pts8 = np.array([(w * pts[pick, 4] + x1)[0]]).T
+    pts9 = np.array([(w * pts[pick, 9] + y1)[0]]).T
+
+    x1, y1, x2, y2 = np.array([(x1 + dx1 * w)[0]]).T, np.array([(y1 + dx2 * h)[0]]).T, \
+                     np.array([(x2 + dx3 * w)[0]]).T, np.array([(y2 + dx4 * h)[0]]).T,
+
+    rectangles = np.concatenate((x1, y1, x2, y2, sc, pts0, pts1, pts2, pts3, pts4, pts5, pts6, pts7, pts8, pts9), axis=1)
+    pick = []
+
+    for i in range(len(rectangles)):
+        x1 = int(max(0, rectangles[i][0]))
+        y1 = int(max(0, rectangles[i][1]))
+        x2 = int(min(width, rectangles[i][2]))
+        y2 = int(min(height, rectangles[i][3]))
+        if x2 > x1 and y2 > y1:
+            sc = []
+            for j in range(4, 15):
+                sc.append(rectangles[i][j])
+            pick.append([x1, y1, x2, y2].extend(sc))
+    return NMS(pick, 0.3)
+
+def Alignment_2(img,std_landmark,landmark):
+    def Transformation(std_landmark,landmark):
+        std_landmark = np.matrix(std_landmark).astype(np.float64)
+        landmark = np.matrix(landmark).astype(np.float64)
+
+        c1 = np.mean(std_landmark, axis=0)
+        c2 = np.mean(landmark, axis=0)
+        std_landmark -= c1
+        landmark -= c2
+
+        s1 = np.std(std_landmark)
+        s2 = np.std(landmark)
+        std_landmark /= s1
+        landmark /= s2
+
+        U, S, Vt = np.linalg.svd(std_landmark.T * landmark)
+        R = (U * Vt).T
+
+        return np.vstack([np.hstack(((s2 / s1) * R, c2.T - (s2 / s1) * R * c1.T)),np.matrix([0., 0., 1.])])
+
+    Trans_Matrix = Transformation(std_landmark,landmark) # Shape: 3 * 3
+    Trans_Matrix = Trans_Matrix[:2]
+    Trans_Matrix = cv2.invertAffineTransform(Trans_Matrix)
+    new_img = cv2.warpAffine(img,Trans_Matrix,(img.shape[1],img.shape[0]))
+
+    Trans_Matrix = np.array(Trans_Matrix)
+    new_landmark = []
+    for i in range(landmark.shape[0]):
+        pts = []
+        pts.append(Trans_Matrix[0, 0] * landmark[i, 0] + Trans_Matrix[0, 1] * landmark[i, 1] + Trans_Matrix[0, 2])
+        pts.append(Trans_Matrix[1, 0] * landmark[i, 0] + Trans_Matrix[1, 1] * landmark[i, 1] + Trans_Matrix[1, 2])
+        new_landmark.append(pts)
+
+    new_landmark = np.array(new_landmark)
+    return new_img, new_landmark
+
+def rand(a=0, b=1):
+    return np.random.rand() * (b - a) + a
+
+def get_random_data(image, input_shape, random=True, jitter=.1, hue=.1, sat=1.2, val=1.2, proc_img=True):
+    h, w = input_shape
+
+    new_ar = w / h * rand(1 - jitter, 1 + jitter) / rand(1 - jitter,1 + jitter)
+    scale = rand(0.7, 1.3)
+    if new_ar < 1:
+        nh = int(scale * h)
+        nw = int(nh * new_ar)
+    else:
+        nw = int(scale*w)
+        nh = int(nw / new_ar)
+    image = image.resize((nw, nh), Image.BICUBIC)
+
+    # Place image
+    dx = int(rand(0, w - nw))
+    dy = int(rand(0, h - nh))
+    new_image = Image.new('RGB', (w, h), (0, 0, 0))
+    new_image.paste(image, (dx, dy))
+    image = new_image
+
+    # Flip image or not
+    flip = rand() < 0.5
+    if flip: image = image.transpose(Image.FLIP_LEFT_RIGHT)
+
+    # Distort image
+    hue = rand(-hue, hue)
+    sat = rand(1, sat) if rand() < 0.5 else 1 / rand(1, sat)
+    val = rand(1, val) if rand() < 0.5 else 1 / rand(1, val)
+    x = rgb_to_hsv(np.array(image) / 255.)
+    x[..., 0] += hue
+    x[..., 0][x[..., 0] > 1] -= 1
+    x[..., 0][x[..., 0] < 0] += 1
+    x[..., 1] *= sat
+    x[..., 2] *= val
+    x[x > 1] = 1
+    x[x < 0] = 0
+    image_data = hsv_to_rgb(x) * 255 # numpy array, 0 to 1
+    return image_data
+
+
 
 
 
