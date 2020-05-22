@@ -1,5 +1,9 @@
 from keras.layers import Conv2D, Input, PReLU, MaxPool2D, Permute, Flatten, Dense
-from keras.models import Model
+from keras.models import Model, Sequential
+import tensorflow as tf
+import numpy as np
+import utils
+import cv2
 
 # Capture faces and decide on the existence of huamn face
 def create_Pnet(weight_path):
@@ -46,8 +50,121 @@ def create_Rnet(weight_path):
 
     classifier = Dense(2, activation='softmax', name='conv5-1')(x)
     bbox_regress = Dense(4, name='conv5-2')(x)
-    
+
     model = Model([input], [classifier, bbox_regress])
     model.load_weights(weight_path, by_name=True)
 
     return model
+
+def create_Onet(weight_path):
+    input = Input(shape = [48,48,3])
+
+    x = Conv2D(32, (3, 3), strides=1, padding='valid', name='conv1')(input)
+    x = PReLU(shared_axes=[1,2],name='prelu1')(x)
+    x = MaxPool2D(pool_size=3, strides=2, padding='same')(x)
+
+    x = Conv2D(64, (3, 3), strides=1, padding='valid', name='conv2')(x)
+    x = PReLU(shared_axes=[1,2],name='prelu2')(x)
+    x = MaxPool2D(pool_size=3, strides=2)(x)
+
+    x = Conv2D(64, (3, 3), strides=1, padding='valid', name='conv3')(x)
+    x = PReLU(shared_axes=[1,2],name='prelu3')(x)
+    x = MaxPool2D(pool_size=2)(x)
+
+    x = Conv2D(128, (2, 2), strides=1, padding='valid', name='conv4')(x)
+    x = PReLU(shared_axes=[1,2],name='prelu4')(x)
+
+    x = Permute((3,2,1))(x)
+
+    x = Flatten()(x)
+    x = Dense(256, name='conv5') (x)
+    x = PReLU(name='prelu5')(x)
+
+    classifier = Dense(2, activation='softmax',name='conv6-1')(x)
+    bbox_regress = Dense(4,name='conv6-2')(x)
+    landmark_regress = Dense(10,name='conv6-3')(x)
+
+    model = Model([input], [classifier, bbox_regress, landmark_regress])
+    model.load_weights(weight_path, by_name=True)
+
+    return model
+
+class mtcnn():
+    def __init__(self):
+        self.Pnet = create_Pnet('models/pnet.h5')
+        self.Rnet = create_Pnet('models/rnet.h5')
+        self.Onet = create_Pnet('models/onet.h5')
+
+    def detectFace(self, img, threshold):
+        copy_img = (img.copy() - 127.5) / 127.5
+        origin_h, origin_w, _ = copy_img.shape
+
+        # Calculate the scaling rate of original images
+        scales = utils.calculateScales(img)
+        out = []
+
+        # Pnet: Decide on the locations of bounding boxes
+        for scale in scales:
+            hs = int(origin_h * scale)
+            ws = int(origin_w * scale)
+            scale_img = cv2.resize(copy_img, (ws, hs))
+            inputs = scale_img.reshape(1, *scale_img.shape)
+            output = self.Pnet.predict(inputs)
+            out.append(output)
+
+        img_num = len(scales)
+        rectangles = []
+
+        for i in range(img_num):
+            # Probability that human faces exist
+            cls_prob = out[i][0][0][:, :, 1]
+
+            # Their bounding boxes
+            roi = out[i][1][0]
+
+            # Get the heights and widths from scaled images
+            out_h, out_w = cls_prob.shape
+            out_side = max(out_h, out_w)
+
+            # Decoding
+            rectangle = utils.detect_face_12net(cls_prob, roi, out_side, 1 / scales[i], origin_w. origin_h, threshold[0])
+            rectangles.extend(rectangle)
+
+        # Non-maximum suppression
+        rectangles= utils.NMS(rectangles, 0.7)
+        if len(rectangles) == 0: return rectangles
+
+        # Rnet: Refine the bounidng boxes
+        predict_24_batch = []
+        for rectangle in rectangles:
+            crop_img = copy_img[int(rectangle[1]):int(rectangle[3]), int(rectangle[0]):int(rectangle[2])]
+            scale_img = cv2.resize(crop_img, (24, 24))
+            predict_24_batch.append(scale_img)
+
+        predict_24_batch = np.array(predict_24_batch)
+        out = self.Rnet.predict(predict_24_batch)
+
+        # Confidence levels
+        cls_prob = np.array(out[0])
+
+        # Adjust the bounding box of a given image
+        roi_prob = np.array(out[1])
+
+        rectangle = utils.detect_face_24net(cls_prob, roi_prob, rectangles, origin_w, origin_h, threshold[1])
+        if len(rectangles) == 0: return rectangles
+
+        # Onet: Huamn faces bounding boxes
+        predict_batch = []
+        for rectangle in rectangles:
+            crop_img = copy_img[int(rectangle[1]):int(rectangle[3]), int(rectangle[0]):int(rectangle[2])]
+            scale_img = cv2.resize(crop_img, (48, 48))
+            predict_batch.append(scale_img)
+
+        predict_batch = np.array(predict_batch)
+        output = self.Onet.predict(predict_batch)
+        cls_prob = output[0]
+        roi_prob = output[1]
+        pts_prob = output[2]
+
+        rectangles = utils.filter_face_48net(cls_prob, roi_prob, pts_prob, rectangles, origin_w, origin_h, threshold[2])
+        return rectangles
