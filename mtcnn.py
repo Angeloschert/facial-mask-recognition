@@ -153,7 +153,7 @@ class mtcnn():
         rectangle = utils.detect_face_24net(cls_prob, roi_prob, rectangles, origin_w, origin_h, threshold[1])
         if len(rectangles) == 0: return rectangles
 
-        # Onet: Huamn faces bounding boxes
+        # Onet: Human faces bounding boxes
         predict_batch = []
         for rectangle in rectangles:
             crop_img = copy_img[int(rectangle[1]):int(rectangle[3]), int(rectangle[0]):int(rectangle[2])]
