@@ -5,7 +5,7 @@ import numpy as np
 import utils
 import cv2
 
-# Capture faces and decide on the existence of huamn face
+# Capture faces and decide on the existence of human faces
 def create_Pnet(weight_path):
     input = Input(shape=[None, None, 3])
 

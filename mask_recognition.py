@@ -28,14 +28,10 @@ class face_recognition():
         return class_names
 
     def recognize(self, draw):
-        # -----------------------------------------------#
-        #   人脸识别
-        #   先定位，再进行数据库匹配
-        # -----------------------------------------------#
         height, width, _ = np.shape(draw)
         draw_rgb = cv2.cvtColor(draw, cv2.COLOR_BGR2RGB)
 
-        # 检测人脸
+        # Detect human faces
         rectangles = self.mtcnn_model.detectFace(draw_rgb, self.threshold)
         if len(rectangles) == 0:
             return
