@@ -16,7 +16,7 @@ class face_recognition():
         self.NUM_CLASSES = 2
 
         self.mask_model = MobileNet(input_shape=[self.Crop_HEIGHT, self.Crop_WIDTH, 3], classes=self.NUM_CLASSES)
-        self.mask_model.load_weights("./last_one.h5")
+        self.mask_model.load_weights("./logs/last_one.h5")
         self.classes_path = "models/classes.txt"
         self.class_names = self._get_class()
 
